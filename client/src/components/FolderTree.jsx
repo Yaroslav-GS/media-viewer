@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { parentPath } from '../lib/paths.js';
 
 export default function FolderTree({
   node,
@@ -8,6 +9,7 @@ export default function FolderTree({
   onMoveFolder,
   onDeleteFolder,
   onCreateFolder,
+  onMoveFolderRequest,
   dragPayload,
   onDragPayloadChange
 }) {
@@ -21,6 +23,7 @@ export default function FolderTree({
         onMoveFolder={onMoveFolder}
         onDeleteFolder={onDeleteFolder}
         onCreateFolder={onCreateFolder}
+        onMoveFolderRequest={onMoveFolderRequest}
         dragPayload={dragPayload}
         onDragPayloadChange={onDragPayloadChange}
         root
@@ -37,6 +40,7 @@ function TreeNode({
   onMoveFolder,
   onDeleteFolder,
   onCreateFolder,
+  onMoveFolderRequest,
   dragPayload,
   onDragPayloadChange,
   root = false
@@ -136,6 +140,19 @@ function TreeNode({
         </button>
         {!root && (
           <button
+            className="tree-action tree-move"
+            onClick={(event) => {
+              event.stopPropagation();
+              onMoveFolderRequest(node.path, node.name);
+            }}
+            title="Переместить папку"
+            aria-label="Переместить папку"
+          >
+            <span className="button-glyph" aria-hidden="true">↗</span>
+          </button>
+        )}
+        {!root && (
+          <button
             className="tree-action tree-delete"
             onClick={(event) => {
               event.stopPropagation();
@@ -161,6 +178,7 @@ function TreeNode({
               onMoveFolder={onMoveFolder}
               onDeleteFolder={onDeleteFolder}
               onCreateFolder={onCreateFolder}
+              onMoveFolderRequest={onMoveFolderRequest}
               dragPayload={dragPayload}
               onDragPayloadChange={onDragPayloadChange}
             />
@@ -190,10 +208,4 @@ function canDropPayload(payload, targetPath) {
     return payload.path !== targetPath && !targetPath.startsWith(`${payload.path}/`);
   }
   return true;
-}
-
-function parentPath(folderPath) {
-  const index = folderPath.lastIndexOf('/');
-  if (index <= 0) return '/';
-  return folderPath.slice(0, index);
 }

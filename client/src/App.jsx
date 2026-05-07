@@ -3,6 +3,8 @@ import Login from './components/Login.jsx';
 import FolderTree from './components/FolderTree.jsx';
 import MediaGrid from './components/MediaGrid.jsx';
 import Viewer from './components/Viewer.jsx';
+import { apiFetch, jsonFetch, uploadWithProgress } from './lib/api.js';
+import { collectDroppedEntries } from './lib/dropEntries.js';
 
 const AUTH_KEY = 'media-viewer-authenticated';
 
@@ -19,6 +21,11 @@ export default function App() {
   const [uploadDropActive, setUploadDropActive] = useState(false);
   const [dragPayload, setDragPayload] = useState(null);
   const [viewerIndex, setViewerIndex] = useState(null);
+  const [folderDrawerOpen, setFolderDrawerOpen] = useState(false);
+  const [uploadSheetOpen, setUploadSheetOpen] = useState(false);
+  const [mediaActionItem, setMediaActionItem] = useState(null);
+  const [moveRequest, setMoveRequest] = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null);
   const [thumbSize, setThumbSize] = useState(() => localStorage.getItem('media-viewer-thumb-size') || 'medium');
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
@@ -42,6 +49,24 @@ export default function App() {
     folderInputRef.current.setAttribute('directory', '');
     folderInputRef.current.setAttribute('mozdirectory', '');
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    function preventBrowserFileDrop(event) {
+      if (!hasDroppedFiles(event.dataTransfer)) return;
+
+      event.preventDefault();
+      if (event.type === 'dragover') {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+    }
+
+    window.addEventListener('dragover', preventBrowserFileDrop);
+    window.addEventListener('drop', preventBrowserFileDrop);
+    return () => {
+      window.removeEventListener('dragover', preventBrowserFileDrop);
+      window.removeEventListener('drop', preventBrowserFileDrop);
+    };
+  }, []);
 
   function loadTree() {
     setTreeLoading(true);
@@ -82,6 +107,16 @@ export default function App() {
     setIsAuthenticated(false);
     setTree(null);
     setItems([]);
+    setFolderDrawerOpen(false);
+    setUploadSheetOpen(false);
+    setMediaActionItem(null);
+    setMoveRequest(null);
+    setConfirmAction(null);
+  }
+
+  function selectPath(path) {
+    setSelectedPath(path);
+    setFolderDrawerOpen(false);
   }
 
   function changeThumbSize(size) {
@@ -103,7 +138,11 @@ export default function App() {
       const result = await uploadWithProgress(selectedPath, entries, setUploadProgress);
       const skippedText = result.skipped?.length ? `, пропущено: ${result.skipped.length}` : '';
       setStatus(`Загружено: ${result.saved?.length || 0}${skippedText}`);
-      await refresh({ tree: true });
+      try {
+        await refresh({ tree: true });
+      } catch (refreshError) {
+        setError(refreshError.message || 'Файлы загружены, но список не удалось обновить');
+      }
     } catch (err) {
       if (err.details?.skipped?.length) {
         setError(`${err.message}. Поддерживаются только jpg, jpeg, png, gif, webp, avif, mp4, webm, mov, m4v.`);
@@ -121,6 +160,7 @@ export default function App() {
       path: file.name
     }));
     event.target.value = '';
+    setUploadSheetOpen(false);
     uploadEntries(entries);
   }
 
@@ -130,12 +170,18 @@ export default function App() {
       path: file.webkitRelativePath || file.name
     }));
     event.target.value = '';
+    setUploadSheetOpen(false);
     uploadEntries(entries);
   }
 
   async function handleUploadDrop(event) {
     event.preventDefault();
+    event.stopPropagation();
     setUploadDropActive(false);
+
+    if (!hasDroppedFiles(event.dataTransfer)) {
+      return;
+    }
 
     try {
       const entries = await collectDroppedEntries(event.dataTransfer);
@@ -176,6 +222,20 @@ export default function App() {
     }
   }
 
+  async function completeMove(targetFolderPath) {
+    if (!moveRequest) return;
+
+    setMoveRequest(null);
+    setFolderDrawerOpen(false);
+
+    if (moveRequest.kind === 'media-file') {
+      await moveFileToFolder(moveRequest.path, targetFolderPath);
+      return;
+    }
+
+    await moveFolderToFolder(moveRequest.path, targetFolderPath);
+  }
+
   async function createFolderInTree(parentPath) {
     const name = window.prompt('Название новой папки', 'New folder');
     if (name === null) return;
@@ -190,9 +250,7 @@ export default function App() {
     }
   }
 
-  async function deleteViewerItem(item, index) {
-    if (!window.confirm(`Удалить файл "${item.name}"?`)) return;
-
+  async function deleteMediaItem(item, index = items.findIndex((mediaItem) => mediaItem.path === item.path)) {
     try {
       setError('');
       await jsonFetch('/api/media', { path: item.path }, { method: 'DELETE' });
@@ -209,10 +267,28 @@ export default function App() {
     }
   }
 
+  async function deleteViewerItem(item, index) {
+    setConfirmAction({
+      title: 'Удалить файл?',
+      text: item.name,
+      confirmLabel: 'Удалить',
+      danger: true,
+      onConfirm: () => deleteMediaItem(item, index)
+    });
+  }
+
   async function deleteFolderFromTree(folderPath, folderName) {
     if (folderPath === '/') return;
-    if (!window.confirm(`Удалить папку "${folderName}" со всем содержимым?`)) return;
+    setConfirmAction({
+      title: 'Удалить папку?',
+      text: `${folderName} и всё содержимое`,
+      confirmLabel: 'Удалить',
+      danger: true,
+      onConfirm: () => deleteFolder(folderPath)
+    });
+  }
 
+  async function deleteFolder(folderPath) {
     try {
       setError('');
       await jsonFetch('/api/folder', { path: folderPath }, { method: 'DELETE' });
@@ -227,6 +303,33 @@ export default function App() {
       setError(err.message || 'Удаление невозможно');
     }
   }
+
+  function requestMediaMove(item) {
+    setMediaActionItem(null);
+    setMoveRequest({
+      kind: 'media-file',
+      path: item.path,
+      name: item.name
+    });
+  }
+
+  function requestFolderMove(folderPath, folderName) {
+    setMoveRequest({
+      kind: 'folder',
+      path: folderPath,
+      name: folderName
+    });
+    setFolderDrawerOpen(true);
+  }
+
+  async function confirmPendingAction() {
+    const pendingAction = confirmAction;
+    setConfirmAction(null);
+    await pendingAction?.onConfirm?.();
+  }
+
+  const currentPathLabel = selectedPath === '/' ? 'MEDIA_ROOT' : selectedPath;
+  const breadcrumbs = pathBreadcrumbs(selectedPath);
 
   if (!isAuthenticated) {
     return <Login onLogin={handleLogin} />;
@@ -252,26 +355,42 @@ export default function App() {
           <FolderTree
             node={tree}
             selectedPath={selectedPath}
-            onSelect={(path) => setSelectedPath(path)}
+            onSelect={selectPath}
             onMoveFile={moveFileToFolder}
             onMoveFolder={moveFolderToFolder}
             onDeleteFolder={deleteFolderFromTree}
             onCreateFolder={createFolderInTree}
+            onMoveFolderRequest={requestFolderMove}
             dragPayload={dragPayload}
             onDragPayloadChange={setDragPayload}
           />
         )}
-        <input ref={fileInputRef} className="hidden-input" type="file" multiple onChange={handleFileInput} />
-        <input ref={folderInputRef} className="hidden-input" type="file" multiple onChange={handleFolderInput} />
+        <input
+          ref={fileInputRef}
+          className="hidden-input"
+          type="file"
+          multiple
+          accept="image/*,video/*"
+          onChange={handleFileInput}
+        />
+        <input
+          ref={folderInputRef}
+          className="hidden-input"
+          type="file"
+          multiple
+          accept="image/*,video/*"
+          onChange={handleFolderInput}
+        />
         <div
           className={`sidebar-upload ${uploadDropActive ? 'drop-active' : ''}`}
           onClick={() => fileInputRef.current?.click()}
           onDragEnter={(event) => {
-            if (event.dataTransfer?.types?.includes('Files')) setUploadDropActive(true);
+            if (hasDroppedFiles(event.dataTransfer)) setUploadDropActive(true);
           }}
           onDragOver={(event) => {
-            if (event.dataTransfer?.types?.includes('Files')) {
+            if (hasDroppedFiles(event.dataTransfer)) {
               event.preventDefault();
+              event.stopPropagation();
               event.dataTransfer.dropEffect = 'copy';
             }
           }}
@@ -316,9 +435,24 @@ export default function App() {
       </aside>
 
       <main className="content">
+        <header className="mobile-topbar">
+          <button className="mobile-tool-button" onClick={() => setFolderDrawerOpen(true)}>Папки</button>
+          <div className="mobile-current-path">{currentPathLabel}</div>
+          <button className="mobile-tool-button" onClick={() => setUploadSheetOpen(true)}>Загрузить</button>
+        </header>
+
+        <nav className="breadcrumbs" aria-label="Текущий путь">
+          {breadcrumbs.map((crumb, index) => (
+            <button key={crumb.path} onClick={() => selectPath(crumb.path)}>
+              {crumb.label}
+              {index < breadcrumbs.length - 1 && <span aria-hidden="true">/</span>}
+            </button>
+          ))}
+        </nav>
+
         <header className="content-header">
           <div>
-            <h1>{selectedPath === '/' ? 'MEDIA_ROOT' : selectedPath}</h1>
+            <h1>{currentPathLabel}</h1>
             <p>{items.length ? `${items.length} медиафайлов` : 'Выберите папку или добавьте файлы'}</p>
           </div>
           <div className="content-tools">
@@ -352,10 +486,96 @@ export default function App() {
           loading={mediaLoading}
           thumbSize={thumbSize}
           onOpen={setViewerIndex}
+          onItemActions={setMediaActionItem}
           onDragPayloadChange={setDragPayload}
         />
         {uploadDropActive && <div className="drop-hint">Отпустите файлы или папки для загрузки в текущую папку</div>}
       </main>
+
+      <button className="mobile-view-fab" onClick={() => changeThumbSize(nextThumbSize(thumbSize))}>
+        Вид
+      </button>
+
+      {folderDrawerOpen && (
+        <div className="mobile-overlay" role="dialog" aria-modal="true" aria-label={moveRequest ? 'Выбор папки' : 'Папки'}>
+          <div className="mobile-drawer">
+            <div className="mobile-drawer-header">
+              <div>
+                <div className="drawer-title">{moveRequest ? 'Куда переместить' : 'Папки'}</div>
+                {moveRequest && <div className="drawer-subtitle">{moveRequest.name}</div>}
+              </div>
+              <button className="icon-button" onClick={() => {
+                setFolderDrawerOpen(false);
+                setMoveRequest(null);
+              }} aria-label="Закрыть">
+                <span className="button-glyph" aria-hidden="true">×</span>
+              </button>
+            </div>
+            {treeLoading && <div className="muted-state">Загрузка папок...</div>}
+            {tree && (
+              <FolderTree
+                node={tree}
+                selectedPath={selectedPath}
+                onSelect={moveRequest ? completeMove : selectPath}
+                onMoveFile={moveFileToFolder}
+                onMoveFolder={moveFolderToFolder}
+                onDeleteFolder={deleteFolderFromTree}
+                onCreateFolder={createFolderInTree}
+                onMoveFolderRequest={requestFolderMove}
+                dragPayload={dragPayload}
+                onDragPayloadChange={setDragPayload}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {uploadSheetOpen && (
+        <ActionSheet title="Загрузить в текущую папку" onClose={() => setUploadSheetOpen(false)}>
+          <button onClick={() => fileInputRef.current?.click()}>Выбрать фото или видео</button>
+          <button onClick={() => folderInputRef.current?.click()}>Выбрать папку</button>
+          <p>На телефонах выбор папки может быть недоступен. В этом случае используйте множественный выбор файлов.</p>
+        </ActionSheet>
+      )}
+
+      {mediaActionItem && (
+        <ActionSheet title={mediaActionItem.name} onClose={() => setMediaActionItem(null)}>
+          <button onClick={() => {
+            setViewerIndex(items.findIndex((item) => item.path === mediaActionItem.path));
+            setMediaActionItem(null);
+          }}>
+            Открыть
+          </button>
+          <button onClick={() => {
+            requestMediaMove(mediaActionItem);
+            setFolderDrawerOpen(true);
+          }}>
+            Переместить
+          </button>
+          <button className="sheet-danger" onClick={() => {
+            const item = mediaActionItem;
+            setMediaActionItem(null);
+            setConfirmAction({
+              title: 'Удалить файл?',
+              text: item.name,
+              confirmLabel: 'Удалить',
+              danger: true,
+              onConfirm: () => deleteMediaItem(item)
+            });
+          }}>
+            Удалить
+          </button>
+        </ActionSheet>
+      )}
+
+      {confirmAction && (
+        <ActionSheet title={confirmAction.title} onClose={() => setConfirmAction(null)}>
+          <p>{confirmAction.text}</p>
+          <button className={confirmAction.danger ? 'sheet-danger' : ''} onClick={confirmPendingAction}>
+            {confirmAction.confirmLabel || 'Подтвердить'}
+          </button>
+        </ActionSheet>
+      )}
 
       {viewerIndex !== null && (
         <Viewer
@@ -370,150 +590,44 @@ export default function App() {
   );
 }
 
-async function apiFetch(url, options = {}) {
-  const response = await fetch(url, options);
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    const error = new Error(data.error || 'Ошибка запроса');
-    error.status = response.status;
-    throw error;
-  }
-
-  return data;
+function ActionSheet({ title, children, onClose }) {
+  return (
+    <div className="sheet-backdrop" role="dialog" aria-modal="true" aria-label={title} onClick={onClose}>
+      <div className="action-sheet" onClick={(event) => event.stopPropagation()}>
+        <div className="sheet-header">
+          <div className="sheet-title">{title}</div>
+          <button className="icon-button" onClick={onClose} aria-label="Закрыть">
+            <span className="button-glyph" aria-hidden="true">×</span>
+          </button>
+        </div>
+        <div className="sheet-actions">{children}</div>
+      </div>
+    </div>
+  );
 }
 
-async function jsonFetch(url, body, options = {}) {
-  return apiFetch(url, {
-    method: options.method || 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
+function pathBreadcrumbs(path) {
+  if (path === '/') return [{ label: 'MEDIA_ROOT', path: '/' }];
+
+  const parts = path.split('/').filter(Boolean);
+  return [
+    { label: 'MEDIA_ROOT', path: '/' },
+    ...parts.map((part, index) => ({
+      label: part,
+      path: `/${parts.slice(0, index + 1).join('/')}`
+    }))
+  ];
 }
 
-function uploadWithProgress(targetPath, entries, onProgress) {
-  const formData = new FormData();
-  formData.append('paths', JSON.stringify(entries.map((entry) => entry.path)));
-  entries.forEach((entry) => {
-    formData.append('files', entry.file, entry.file.name);
-  });
-
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `/api/upload?path=${encodeURIComponent(targetPath)}`);
-
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable) return;
-      onProgress(Math.round((event.loaded / event.total) * 100));
-    };
-
-    xhr.onload = () => {
-      const data = parseJson(xhr.responseText);
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(data);
-      } else {
-        const error = new Error(data.error || 'Загрузка не удалась');
-        error.details = data;
-        reject(error);
-      }
-    };
-
-    xhr.onerror = () => reject(new Error('Загрузка не удалась'));
-    xhr.send(formData);
-  });
+function nextThumbSize(size) {
+  if (size === 'small') return 'medium';
+  if (size === 'medium') return 'large';
+  return 'small';
 }
 
-async function collectDroppedEntries(dataTransfer) {
-  const items = Array.from(dataTransfer?.items || []);
-  const handles = [];
-  const entries = [];
-
-  for (const item of items) {
-    if (typeof item.getAsFileSystemHandle === 'function') {
-      try {
-        const handle = await item.getAsFileSystemHandle();
-        if (handle) handles.push(handle);
-      } catch {
-        // Fallback below handles browsers that expose but do not allow this API for dropped folders.
-      }
-    }
-
-    const entry = item.webkitGetAsEntry?.();
-    if (entry) entries.push(entry);
-  }
-
-  if (handles.length) {
-    const collected = [];
-    for (const handle of handles) {
-      await collectHandle(handle, '', collected);
-    }
-    return collected;
-  }
-
-  if (entries.length) {
-    const collected = [];
-    for (const entry of entries) {
-      await collectEntry(entry, '', collected);
-    }
-    return collected;
-  }
-
-  return Array.from(dataTransfer?.files || [])
-    .filter((file) => file.size > 0 || file.name.includes('.'))
-    .map((file) => ({ file, path: file.webkitRelativePath || file.name }));
-}
-
-async function collectEntry(entry, parentPath, collected) {
-  const entryPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
-
-  if (entry.isFile) {
-    const file = await readEntryFile(entry);
-    collected.push({ file, path: entryPath });
-    return;
-  }
-
-  if (entry.isDirectory) {
-    const reader = entry.createReader();
-    let children = [];
-    do {
-      children = await readDirectoryEntries(reader);
-      for (const child of children) {
-        await collectEntry(child, entryPath, collected);
-      }
-    } while (children.length);
-  }
-}
-
-async function collectHandle(handle, parentPath, collected) {
-  const handlePath = parentPath ? `${parentPath}/${handle.name}` : handle.name;
-
-  if (handle.kind === 'file') {
-    const file = await handle.getFile();
-    collected.push({ file, path: handlePath });
-    return;
-  }
-
-  if (handle.kind === 'directory') {
-    for await (const child of handle.values()) {
-      await collectHandle(child, handlePath, collected);
-    }
-  }
-}
-
-function readEntryFile(entry) {
-  return new Promise((resolve, reject) => entry.file(resolve, reject));
-}
-
-function readDirectoryEntries(reader) {
-  return new Promise((resolve, reject) => reader.readEntries(resolve, reject));
-}
-
-function parseJson(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return {};
-  }
+function hasDroppedFiles(dataTransfer) {
+  const types = Array.from(dataTransfer?.types || []).map((type) => String(type).toLowerCase());
+  return types.includes('files') || Boolean(dataTransfer?.files?.length);
 }
 
 function handleAuthError(error, setIsAuthenticated, setError) {

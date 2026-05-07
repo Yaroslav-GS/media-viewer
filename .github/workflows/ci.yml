@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '24'
+  DOCKER_IMAGE: ${{ vars.DOCKER_IMAGE }}
+
+jobs:
+  verify:
+    name: Lint, build, smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build app
+        run: npm run build
+
+      - name: Smoke test app
+        env:
+          MEDIA_ROOT: ${{ runner.temp }}/media
+          CACHE_DIR: ${{ runner.temp }}/cache
+          CACHE_METADATA_PATH: ${{ runner.temp }}/cache/metadata.json
+          UPLOAD_TMP_DIR: ${{ runner.temp }}/uploads
+          PIN_CODE: '1234'
+          PORT: '3000'
+          SMOKE_BASE_URL: http://127.0.0.1:3000
+        run: |
+          mkdir -p "$MEDIA_ROOT" "$CACHE_DIR" "$UPLOAD_TMP_DIR"
+          npm start &
+          app_pid=$!
+          trap 'kill "$app_pid"' EXIT
+          npm run test:smoke
+
+      - name: Build Docker image
+        run: docker build -t webviewer-ci:${{ github.sha }} .
+
+      - name: Smoke test Docker image
+        env:
+          PIN_CODE: '1234'
+          SMOKE_BASE_URL: http://127.0.0.1:3001
+        run: |
+          mkdir -p "$RUNNER_TEMP/media-docker" "$RUNNER_TEMP/cache-docker" "$RUNNER_TEMP/uploads-docker"
+          docker run -d --rm \
+            --name webviewer-smoke \
+            -p 127.0.0.1:3001:3000 \
+            -e MEDIA_ROOT=/media \
+            -e CACHE_DIR=/cache \
+            -e CACHE_METADATA_PATH=/cache/metadata.json \
+            -e UPLOAD_TMP_DIR=/uploads-tmp \
+            -e PIN_CODE="$PIN_CODE" \
+            -v "$RUNNER_TEMP/media-docker:/media" \
+            -v "$RUNNER_TEMP/cache-docker:/cache" \
+            -v "$RUNNER_TEMP/uploads-docker:/uploads-tmp" \
+            webviewer-ci:${{ github.sha }}
+          trap 'docker stop webviewer-smoke' EXIT
+          npm run test:smoke
+
+  publish-docker:
+    name: Publish Docker image
+    runs-on: ubuntu-latest
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release tag
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if ! echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Release tag must look like v0.1.1, got: $tag"
+            exit 1
+          fi
+
+      - name: Check Docker image name
+        run: |
+          if [ -z "$DOCKER_IMAGE" ]; then
+            echo "Set repository variable DOCKER_IMAGE, for example: your-dockerhub-user/webviewer"
+            exit 1
+          fi
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:${{ github.ref_name }}
+            ${{ env.DOCKER_IMAGE }}:latest

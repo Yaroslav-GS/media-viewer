@@ -1,6 +1,9 @@
 import fs from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { constants, createReadStream } from 'node:fs';
 import path from 'node:path';
+import { getBasicMediaMetadata } from './cache/mediaMetadata.js';
+import { readPreviewSize } from './cache/config.js';
+import { getPreviewFile, previewContentTypeFor } from './cache/previewCache.js';
 
 export const imageExtensions = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif']);
 export const videoExtensions = new Set(['.mp4', '.webm', '.mov', '.m4v']);
@@ -75,7 +78,7 @@ export function normalizeClientPath(input = '') {
 
 export async function buildFolderTree(mediaRoot, relativePath = '/') {
   const { absolutePath, relativePath: currentRelativePath } = resolveInsideRoot(mediaRoot, relativePath);
-  const entries = await safeReadDir(absolutePath);
+  const entries = await safeReadDir(absolutePath, { allowUnreadable: true });
   const directories = [];
 
   for (const entry of entries) {
@@ -109,13 +112,18 @@ export async function listMedia(mediaRoot, relativePath = '/') {
     const fileRelativePath = path.posix.join(normalizeClientPath(relativePath), entry.name);
     const normalizedFilePath = fileRelativePath.startsWith('/') ? fileRelativePath : `/${fileRelativePath}`;
 
-    items.push({
+    const metadata = await getBasicMediaMetadata({
+      absolutePath: absoluteFilePath,
+      relativePath: normalizedFilePath,
       name: entry.name,
-      path: normalizedFilePath,
       type,
+      stats
+    });
+
+    items.push({
+      ...metadata,
       url: `/media${encodeMediaPath(normalizedFilePath)}`,
-      size: stats.size,
-      modifiedAt: stats.mtime.toISOString()
+      previewUrl: `/preview${encodeMediaPath(normalizedFilePath)}`
     });
   }
 
@@ -178,6 +186,42 @@ export async function sendMediaFile(req, res, mediaRoot, mediaPath) {
   return createReadStream(realFilePath).pipe(res);
 }
 
+export async function sendMediaPreviewFile(req, res, mediaRoot, mediaPath) {
+  const { absolutePath } = resolveInsideRoot(mediaRoot, mediaPath);
+  const type = mediaTypeFor(absolutePath);
+
+  if (!type) {
+    return res.status(404).json({ error: 'Файл не поддерживается' });
+  }
+
+  let stats;
+  try {
+    stats = await fs.stat(absolutePath);
+  } catch {
+    return res.status(404).json({ error: 'Файл не найден' });
+  }
+
+  const realFilePath = await fs.realpath(absolutePath);
+  const relation = path.relative(mediaRoot, realFilePath);
+  if (relation.startsWith('..') || path.isAbsolute(relation)) {
+    return res.status(403).json({ error: 'Файл вне MEDIA_ROOT недоступен' });
+  }
+
+  if (!stats.isFile()) {
+    return res.status(404).json({ error: 'Файл не найден' });
+  }
+
+  const size = readPreviewSize(req.query.size);
+  const previewPath = await getPreviewFile(realFilePath, stats, type, size);
+  const contentType = previewContentTypeFor(type);
+  const previewStats = await fs.stat(previewPath);
+
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Length', previewStats.size);
+  return createReadStream(previewPath).pipe(res);
+}
+
 export async function saveUploadedMedia(mediaRoot, targetRelativePath, files, relativePaths = []) {
   const { absolutePath: targetDir } = resolveInsideRoot(mediaRoot, targetRelativePath);
   await assertExistingDirectoryInsideRoot(mediaRoot, targetDir);
@@ -213,7 +257,7 @@ export async function saveUploadedMedia(mediaRoot, targetRelativePath, files, re
 
     const uniqueFileName = await uniqueName(destinationDir, fileName);
     const destinationPath = path.join(destinationDir, uniqueFileName);
-    await fs.writeFile(destinationPath, file.buffer, { flag: 'wx' });
+    await saveUploadedFile(file, destinationPath);
     saved.push({
       name: uniqueFileName,
       path: toClientPath(mediaRoot, destinationPath)
@@ -221,6 +265,21 @@ export async function saveUploadedMedia(mediaRoot, targetRelativePath, files, re
   }
 
   return { saved, skipped };
+}
+
+export async function cleanupUploadedFiles(files = []) {
+  await Promise.all(
+    files
+      .map((file) => file?.path)
+      .filter(Boolean)
+      .map(async (temporaryPath) => {
+        try {
+          await fs.unlink(temporaryPath);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      })
+  );
 }
 
 export async function createFolder(mediaRoot, parentRelativePath, requestedName = 'New folder') {
@@ -328,10 +387,14 @@ export async function deleteFolder(mediaRoot, relativePath) {
   await fs.rm(absolutePath, { recursive: true });
 }
 
-async function safeReadDir(absolutePath) {
+async function safeReadDir(absolutePath, { allowUnreadable = false } = {}) {
   try {
     return await fs.readdir(absolutePath, { withFileTypes: true });
-  } catch {
+  } catch (readError) {
+    if (allowUnreadable && ['EACCES', 'EPERM', 'ENOENT', 'ENOTDIR'].includes(readError.code)) {
+      return [];
+    }
+
     const error = new Error('Директория недоступна');
     error.statusCode = 500;
     throw error;
@@ -445,6 +508,33 @@ async function exists(absolutePath) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function saveUploadedFile(file, destinationPath) {
+  if (file.path) {
+    await moveTemporaryUpload(file.path, destinationPath);
+    return;
+  }
+
+  if (file.buffer) {
+    await fs.writeFile(destinationPath, file.buffer, { flag: 'wx' });
+    return;
+  }
+
+  const error = new Error('Загруженный файл недоступен');
+  error.statusCode = 400;
+  throw error;
+}
+
+async function moveTemporaryUpload(sourcePath, destinationPath) {
+  try {
+    await fs.rename(sourcePath, destinationPath);
+  } catch (error) {
+    if (error.code !== 'EXDEV') throw error;
+
+    await fs.copyFile(sourcePath, destinationPath, constants.COPYFILE_EXCL);
+    await fs.unlink(sourcePath);
   }
 }
 

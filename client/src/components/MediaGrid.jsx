@@ -1,4 +1,11 @@
-export default function MediaGrid({ items, loading, thumbSize, onOpen, onDragPayloadChange }) {
+import { useEffect, useRef, useState } from 'react';
+import { parentPath } from '../lib/paths.js';
+
+const maxPreviewLoads = 2;
+const previewQueue = [];
+let activePreviewLoads = 0;
+
+export default function MediaGrid({ items, loading, thumbSize, onOpen, onItemActions, onDragPayloadChange }) {
   if (loading) {
     return <div className="muted-state content-state">Загрузка медиа...</div>;
   }
@@ -40,27 +47,131 @@ export default function MediaGrid({ items, loading, thumbSize, onOpen, onDragPay
           }}
           onDragEnd={() => onDragPayloadChange(null)}
         >
+          <button
+            className="media-card-menu"
+            onClick={(event) => {
+              event.stopPropagation();
+              onItemActions(item);
+            }}
+            aria-label={`Действия для ${item.name}`}
+          >
+            ⋮
+          </button>
           <div className="thumb">
-            {item.type === 'image' ? (
-              <img src={item.url} alt={item.name} loading="lazy" />
-            ) : (
-              <div className="video-thumb">
-                <video src={item.url} preload="metadata" muted />
-                <div className="play-badge">▶</div>
-              </div>
-            )}
+            <PreviewThumb item={item} thumbSize={thumbSize} />
           </div>
           <div className="media-tooltip" aria-hidden="true">
             {item.name}
           </div>
+          <div className="media-name">{item.name}</div>
         </div>
       ))}
     </div>
   );
 }
 
-function parentPath(filePath) {
-  const index = filePath.lastIndexOf('/');
-  if (index <= 0) return '/';
-  return filePath.slice(0, index);
+function PreviewThumb({ item, thumbSize }) {
+  const [isVisible, setIsVisible] = useState(false);
+  const [previewSrc, setPreviewSrc] = useState('');
+  const [failed, setFailed] = useState(false);
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+
+    if (!('IntersectionObserver' in window)) {
+      setIsVisible(true);
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        setIsVisible(true);
+        observer.disconnect();
+      },
+      { rootMargin: '640px 0px' }
+    );
+
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!isVisible) return undefined;
+
+    const controller = new AbortController();
+    let objectUrl = '';
+    let cancelled = false;
+    const previewUrl = `${item.previewUrl}?size=${previewPixelSize(thumbSize)}`;
+
+    setPreviewSrc('');
+    setFailed(false);
+
+    const cancelQueuedLoad = enqueuePreviewLoad(async () => {
+      try {
+        const response = await fetch(previewUrl, { signal: controller.signal });
+        if (!response.ok) throw new Error('Preview request failed');
+
+        const blob = await response.blob();
+        if (cancelled) return;
+
+        objectUrl = URL.createObjectURL(blob);
+        setPreviewSrc(objectUrl);
+      } catch (error) {
+        if (error.name !== 'AbortError' && !cancelled) {
+          setFailed(true);
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      cancelQueuedLoad();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [isVisible, item.previewUrl, thumbSize]);
+
+  return (
+    <div ref={rootRef} className={`preview-thumb ${item.type === 'video' ? 'video-thumb' : ''} ${failed ? 'preview-failed' : ''}`}>
+      {previewSrc ? (
+        <img src={previewSrc} alt={item.name} draggable={false} />
+      ) : (
+        <div className="preview-placeholder" aria-hidden="true" />
+      )}
+      {item.type === 'video' && <div className="play-badge">▶</div>}
+    </div>
+  );
+}
+
+function enqueuePreviewLoad(task) {
+  const entry = { task, cancelled: false };
+  previewQueue.push(entry);
+  runPreviewQueue();
+
+  return () => {
+    entry.cancelled = true;
+  };
+}
+
+function runPreviewQueue() {
+  while (activePreviewLoads < maxPreviewLoads && previewQueue.length) {
+    const entry = previewQueue.shift();
+    if (entry.cancelled) continue;
+
+    activePreviewLoads += 1;
+    Promise.resolve(entry.task())
+      .finally(() => {
+        activePreviewLoads -= 1;
+        runPreviewQueue();
+      });
+  }
+}
+
+function previewPixelSize(thumbSize) {
+  if (thumbSize === 'small') return 240;
+  if (thumbSize === 'large') return 720;
+  return 480;
 }

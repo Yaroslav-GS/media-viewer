@@ -40,7 +40,9 @@ export default function Login({ onLogin }) {
         <label htmlFor="pin">Пинкод</label>
         <input
           id="pin"
+          type="password"
           autoFocus
+          autoComplete="current-password"
           inputMode="numeric"
           pattern="[0-9]*"
           maxLength={16}

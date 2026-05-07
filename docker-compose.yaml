@@ -1,0 +1,19 @@
+services:
+  media-viewer:
+    image: yaroslavgs/webviewer:${VERSION:-latest}
+    env_file: .env
+    environment:
+      MEDIA_ROOT: /media
+      CACHE_DIR: /cache
+      CACHE_METADATA_PATH: /cache/metadata.json
+      UPLOAD_TMP_DIR: /uploads-tmp
+    volumes:
+      - ${MEDIA_HOST_DIR:-./test-media}:/media:rw
+      - ${CACHE_HOST_DIR:-media-viewer-cache}:/cache
+      - ${UPLOAD_TMP_HOST_DIR:-/tmp/local-media-viewer-uploads}:/uploads-tmp
+    ports:
+      - '127.0.0.1:${PORT:-3000}:3000'
+    restart: unless-stopped
+
+volumes:
+  media-viewer-cache:

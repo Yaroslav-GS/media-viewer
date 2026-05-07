@@ -7,7 +7,9 @@
     "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
     "server:dev": "nodemon server/index.js",
     "client:dev": "vite --host 0.0.0.0 --port 5173",
+    "lint": "find server -name '*.js' -print0 | xargs -0 -n1 node --check && node --check vite.config.js",
     "build": "vite build",
+    "test:smoke": "node scripts/smoke-test.mjs",
     "start": "node server/index.js"
   },
   "dependencies": {
@@ -19,6 +21,7 @@
     "multer": "^2.1.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "sharp": "^0.34.5",
     "vite": "^6.3.5"
   },
   "devDependencies": {
