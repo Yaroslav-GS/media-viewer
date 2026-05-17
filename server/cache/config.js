@@ -16,9 +16,11 @@ export const cacheConfig = {
   imageQuality: readPositiveInt(process.env.THUMB_QUALITY, 68),
   imageEffort: readPositiveInt(process.env.THUMB_EFFORT, 4),
   videoQuality: readPositiveInt(process.env.VIDEO_THUMB_QUALITY, 72),
+  videoThumbnailSeconds: readPositiveNumber(process.env.VIDEO_THUMB_SECONDS, 1),
+  ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
   concurrency: readPositiveInt(process.env.THUMB_CONCURRENCY, 2),
   metadataEnabled: readBoolean(process.env.METADATA_CACHE_ENABLED, true),
-  videoThumbnailsEnabled: readBoolean(process.env.VIDEO_THUMBNAILS, false),
+  videoThumbnailsEnabled: readBoolean(process.env.VIDEO_THUMBNAILS, true),
   cleanupIntervalMs: readPositiveInt(process.env.CACHE_CLEANUP_INTERVAL_MINUTES, 30) * 60 * 1000
 };
 
@@ -31,6 +33,11 @@ export function readPreviewSize(input) {
 function readPositiveInt(input, fallback) {
   const value = Number.parseInt(input, 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function readPositiveNumber(input, fallback) {
+  const value = Number.parseFloat(input);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 function readBytes(input, fallback) {
