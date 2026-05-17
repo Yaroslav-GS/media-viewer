@@ -3,6 +3,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
+import csrf from 'csurf';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -13,7 +14,6 @@ import {
   destroySession,
   isLoginLimited,
   recordFailedLogin,
-  requireCsrfToken,
   requireAuth,
   validatePinConfig,
   verifyPin
@@ -49,6 +49,14 @@ const apiRateLimit = rateLimit({
   legacyHeaders: false,
   message: { error: 'Слишком много запросов. Попробуйте позже.' }
 });
+const csrfProtection = csrf({
+  cookie: {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/'
+  }
+});
 const upload = multer({
   storage: multer.diskStorage({
     destination(req, file, callback) {
@@ -69,7 +77,11 @@ app.use(requireTrustedOrigin);
 app.use(express.json({ limit: '128kb' }));
 app.use(cookieParser());
 app.use('/api', apiRateLimit);
-app.use('/api', requireCsrfToken);
+app.use('/api', csrfProtection);
+
+app.get('/api/csrf-token', (req, res) => {
+  return res.json({ csrfToken: req.csrfToken() });
+});
 
 app.post('/api/login', (req, res) => {
   const configuredPin = process.env.PIN_CODE;
@@ -89,8 +101,8 @@ app.post('/api/login', (req, res) => {
   }
 
   clearFailedLogins(loginKey);
-  const csrfToken = createSession(req, res);
-  return res.json({ ok: true, csrfToken });
+  createSession(req, res);
+  return res.json({ ok: true, csrfToken: req.csrfToken() });
 });
 
 app.post('/api/logout', requireAuth, (req, res) => {
@@ -195,6 +207,10 @@ app.use((error, req, res, next) => {
 
   if (error.type === 'entity.too.large') {
     return res.status(413).json({ error: 'Тело запроса слишком большое' });
+  }
+
+  if (error.code === 'EBADCSRFTOKEN') {
+    return res.status(403).json({ error: 'Недействительный CSRF-токен' });
   }
 
   const statusCode = error.statusCode || 500;

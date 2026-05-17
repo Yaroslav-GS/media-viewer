@@ -39,15 +39,32 @@ async function assertRootPage() {
 }
 
 async function login() {
+  const csrfResponse = await fetch(`${baseUrl}/api/csrf-token`);
+  assertStatus(csrfResponse, 200, 'GET /api/csrf-token');
+
+  const csrfCookie = readSetCookies(csrfResponse)[0];
+  if (!csrfCookie) {
+    throw new Error('GET /api/csrf-token did not set a CSRF cookie');
+  }
+
+  const csrfBody = await csrfResponse.json();
+  if (typeof csrfBody.csrfToken !== 'string' || !csrfBody.csrfToken) {
+    throw new Error('GET /api/csrf-token did not return a CSRF token');
+  }
+
   const response = await fetch(`${baseUrl}/api/login`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      Cookie: csrfCookie,
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': csrfBody.csrfToken
+    },
     body: JSON.stringify({ pin: pinCode })
   });
   assertStatus(response, 200, 'POST /api/login');
 
-  const cookie = response.headers.get('set-cookie')?.split(';')[0];
-  if (!cookie) {
+  const sessionCookie = readSetCookies(response).find((cookie) => cookie.startsWith('media_viewer_session='));
+  if (!sessionCookie) {
     throw new Error('POST /api/login did not set a session cookie');
   }
 
@@ -56,7 +73,7 @@ async function login() {
     throw new Error('POST /api/login did not return a CSRF token');
   }
 
-  return { cookie, csrfToken: body.csrfToken };
+  return { cookie: `${csrfCookie}; ${sessionCookie}`, csrfToken: body.csrfToken };
 }
 
 async function assertTree(cookie) {
@@ -92,6 +109,16 @@ function assertStatus(response, expected, label) {
   if (response.status !== expected) {
     throw new Error(`${label} returned ${response.status}, expected ${expected}`);
   }
+}
+
+function readSetCookies(response) {
+  const setCookies = response.headers.getSetCookie?.() || [];
+  if (setCookies.length) {
+    return setCookies.map((cookie) => cookie.split(';')[0]);
+  }
+
+  const header = response.headers.get('set-cookie');
+  return header ? [header.split(';')[0]] : [];
 }
 
 function readPositiveInt(value, fallback) {

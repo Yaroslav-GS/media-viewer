@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { setCsrfToken } from '../lib/api.js';
+import { fetchCsrfToken, setCsrfToken } from '../lib/api.js';
 
 export default function Login({ onLogin }) {
   const [pin, setPin] = useState('');
@@ -12,9 +12,13 @@ export default function Login({ onLogin }) {
     setError('');
 
     try {
+      const csrfToken = await fetchCsrfToken();
       const response = await fetch('/api/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken
+        },
         body: JSON.stringify({ pin })
       });
       const data = await response.json().catch(() => ({}));
