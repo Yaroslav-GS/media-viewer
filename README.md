@@ -86,6 +86,15 @@ CACHE_DIR=/tmp/local-media-viewer-cache
 npm install
 ```
 
+Для генерации кадров-превью видео при локальном запуске нужен `ffmpeg` в системе:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ffmpeg
+```
+
+В Docker-образе `ffmpeg` устанавливается автоматически.
+
 Для разработки:
 
 ```bash
@@ -139,7 +148,7 @@ npm start
 
 Размер кеша ограничивается через `CACHE_MAX_BYTES`. При превышении лимита старые превью удаляются по LRU-политике. Очистка выполняется в фоне и не должна блокировать просмотр медиатеки.
 
-Генерация превью идет через очередь с ограничением параллелизма `THUMB_CONCURRENCY`. Повторные запросы одного и того же превью объединяются в одну задачу. Видео сейчас получают легковесные placeholder-превью; генерация реального кадра из видео оставлена как отдельное расширение.
+Генерация превью идет через очередь с ограничением параллелизма `THUMB_CONCURRENCY`. Повторные запросы одного и того же превью объединяются в одну задачу. Для видео сервер сохраняет один JPEG-кадр, извлеченный через `ffmpeg` на отметке `VIDEO_THUMB_SECONDS`; если `ffmpeg` недоступен или файл не декодируется, используется легковесный placeholder.
 
 Подробная схема кеша описана в [docs/cache-architecture.md](docs/cache-architecture.md).
 
@@ -169,6 +178,9 @@ THUMB_FORMAT=webp
 THUMB_QUALITY=68
 THUMB_EFFORT=4
 THUMB_CONCURRENCY=2
+VIDEO_THUMBNAILS=true
+VIDEO_THUMB_SECONDS=1
+FFMPEG_PATH=ffmpeg
 VIDEO_THUMB_QUALITY=72
 ```
 

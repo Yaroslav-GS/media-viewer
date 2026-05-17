@@ -4,6 +4,7 @@ import { parentPath } from '../lib/paths.js';
 const maxPreviewLoads = 2;
 const previewQueue = [];
 let activePreviewLoads = 0;
+const previewRequestVersion = '2';
 
 export default function MediaGrid({ items, loading, thumbSize, onOpen, onItemActions, onDragPayloadChange }) {
   if (loading) {
@@ -104,7 +105,7 @@ function PreviewThumb({ item, thumbSize }) {
     const controller = new AbortController();
     let objectUrl = '';
     let cancelled = false;
-    const previewUrl = `${item.previewUrl}?size=${previewPixelSize(thumbSize)}`;
+    const previewUrl = buildPreviewUrl(item, thumbSize);
 
     setPreviewSrc('');
     setFailed(false);
@@ -132,7 +133,7 @@ function PreviewThumb({ item, thumbSize }) {
       cancelQueuedLoad();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [isVisible, item.previewUrl, thumbSize]);
+  }, [isVisible, item.modifiedAt, item.previewUrl, item.size, item.type, thumbSize]);
 
   return (
     <div ref={rootRef} className={`preview-thumb ${item.type === 'video' ? 'video-thumb' : ''} ${failed ? 'preview-failed' : ''}`}>
@@ -144,6 +145,20 @@ function PreviewThumb({ item, thumbSize }) {
       {item.type === 'video' && <div className="play-badge">▶</div>}
     </div>
   );
+}
+
+function buildPreviewUrl(item, thumbSize) {
+  const params = new URLSearchParams({
+    size: String(previewPixelSize(thumbSize)),
+    v: [
+      previewRequestVersion,
+      item.type,
+      item.size,
+      item.modifiedAt
+    ].join(':')
+  });
+
+  return `${item.previewUrl}?${params}`;
 }
 
 function enqueuePreviewLoad(task) {

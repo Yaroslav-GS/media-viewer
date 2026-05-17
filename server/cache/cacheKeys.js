@@ -10,6 +10,11 @@ export function previewFormatFor(type) {
   return type === 'image' ? cacheConfig.imageFormat : 'jpeg';
 }
 
+function previewGeneratorFor(type) {
+  if (type === 'image') return 'sharp-image';
+  return cacheConfig.videoThumbnailsEnabled ? 'ffmpeg-frame-v2' : 'video-placeholder';
+}
+
 export function buildPreviewCacheKey({ sourcePath, stats, type, size }) {
   return crypto
     .createHash('sha256')
@@ -22,7 +27,8 @@ export function buildPreviewCacheKey({ sourcePath, stats, type, size }) {
         stats.mtimeMs,
         type,
         size,
-        previewFormatFor(type)
+        previewFormatFor(type),
+        previewGeneratorFor(type)
       ].join('\0')
     )
     .digest('hex');
@@ -40,6 +46,7 @@ export function buildPreviewFingerprint({ sourcePath, stats, type, size }) {
     mtimeMs: stats.mtimeMs,
     mediaType: type,
     previewSize: size,
-    previewFormat: previewFormatFor(type)
+    previewFormat: previewFormatFor(type),
+    previewGenerator: previewGeneratorFor(type)
   };
 }

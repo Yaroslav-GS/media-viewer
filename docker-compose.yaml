@@ -1,5 +1,6 @@
 services:
   media-viewer:
+    build: .
     image: yaroslavgs/webviewer:${VERSION:-latest}
     env_file: .env
     environment:
