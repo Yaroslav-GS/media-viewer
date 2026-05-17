@@ -107,10 +107,21 @@ export default function Viewer({ items, index, onIndexChange, onClose, onDelete 
   }
 
   function onPointerDown(event) {
-    if (item.type !== 'image') return;
+    wasDraggingRef.current = false;
+
+    if (item.type !== 'image') {
+      if (!event.isPrimary) return;
+
+      dragRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        mode: 'swipe'
+      };
+      return;
+    }
 
     event.currentTarget.setPointerCapture(event.pointerId);
-    wasDraggingRef.current = false;
     pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
     if (pointersRef.current.size === 2) {
@@ -136,13 +147,11 @@ export default function Viewer({ items, index, onIndexChange, onClose, onDelete 
   }
 
   function onPointerMove(event) {
-    if (item.type !== 'image') return;
-
-    if (pointersRef.current.has(event.pointerId)) {
+    if (item.type === 'image' && pointersRef.current.has(event.pointerId)) {
       pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     }
 
-    if (pinchRef.current && pointersRef.current.size >= 2) {
+    if (item.type === 'image' && pinchRef.current && pointersRef.current.size >= 2) {
       event.preventDefault();
       const [first, second] = Array.from(pointersRef.current.values());
       const center = midpoint(first, second);
@@ -169,7 +178,7 @@ export default function Viewer({ items, index, onIndexChange, onClose, onDelete 
       wasDraggingRef.current = true;
     }
 
-    if (dragRef.current.mode !== 'pan') return;
+    if (item.type !== 'image' || dragRef.current.mode !== 'pan') return;
 
     event.preventDefault();
     setImageTransform({
@@ -273,7 +282,7 @@ export default function Viewer({ items, index, onIndexChange, onClose, onDelete 
             className={scale > 1 ? 'zoomed' : ''}
           />
         ) : (
-          <video src={item.url} controls autoPlay />
+          <video src={item.url} controls autoPlay playsInline />
         )}
       </div>
     </div>
