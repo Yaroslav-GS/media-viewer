@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import multer from 'multer';
+import rateLimit from 'express-rate-limit';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -41,6 +42,13 @@ const maxUploadFileBytes = readPositiveInt(process.env.MAX_UPLOAD_FILE_MB, 250) 
 const apiRateLimitWindowMs = readPositiveInt(process.env.API_RATE_LIMIT_WINDOW_MS, 60_000);
 const apiRateLimitMaxRequests = readPositiveInt(process.env.API_RATE_LIMIT_MAX_REQUESTS, 120);
 const uploadTempDir = path.resolve(process.env.UPLOAD_TMP_DIR || path.join(os.tmpdir(), 'local-media-viewer-uploads'));
+const apiRateLimit = rateLimit({
+  windowMs: apiRateLimitWindowMs,
+  limit: apiRateLimitMaxRequests,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Слишком много запросов. Попробуйте позже.' }
+});
 const upload = multer({
   storage: multer.diskStorage({
     destination(req, file, callback) {
@@ -223,36 +231,6 @@ function requireTrustedOrigin(req, res, next) {
   if (!source || isTrustedSource(source, req)) return next();
 
   return res.status(403).json({ error: 'Источник запроса не разрешён' });
-}
-
-const apiRateLimitBuckets = new Map();
-
-function apiRateLimit(req, res, next) {
-  const now = Date.now();
-  const key = `${req.ip || req.socket.remoteAddress || 'unknown'}:${req.method}`;
-  const bucket = apiRateLimitBuckets.get(key);
-
-  if (!bucket || bucket.resetAt <= now) {
-    apiRateLimitBuckets.set(key, { count: 1, resetAt: now + apiRateLimitWindowMs });
-    cleanupRateLimitBuckets(now);
-    return next();
-  }
-
-  bucket.count += 1;
-  if (bucket.count > apiRateLimitMaxRequests) {
-    res.setHeader('Retry-After', Math.ceil((bucket.resetAt - now) / 1000));
-    return res.status(429).json({ error: 'Слишком много запросов. Попробуйте позже.' });
-  }
-
-  return next();
-}
-
-function cleanupRateLimitBuckets(now) {
-  for (const [key, bucket] of apiRateLimitBuckets) {
-    if (bucket.resetAt <= now) {
-      apiRateLimitBuckets.delete(key);
-    }
-  }
 }
 
 function isTrustedSource(source, req) {
