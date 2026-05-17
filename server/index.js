@@ -76,8 +76,8 @@ app.use(securityHeaders);
 app.use(requireTrustedOrigin);
 app.use(express.json({ limit: '128kb' }));
 app.use(cookieParser());
+app.use(csrfProtection);
 app.use('/api', apiRateLimit);
-app.use('/api', csrfProtection);
 
 app.get('/api/csrf-token', (req, res) => {
   return res.json({ csrfToken: req.csrfToken() });
