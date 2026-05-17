@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { setCsrfToken } from '../lib/api.js';
 
 export default function Login({ onLogin }) {
   const [pin, setPin] = useState('');
@@ -22,6 +23,7 @@ export default function Login({ onLogin }) {
         throw new Error(data.error || 'Не удалось войти');
       }
 
+      setCsrfToken(data.csrfToken);
       onLogin();
     } catch (err) {
       setError(err.message);

@@ -12,6 +12,7 @@ import {
   destroySession,
   isLoginLimited,
   recordFailedLogin,
+  requireCsrfToken,
   requireAuth,
   validatePinConfig,
   verifyPin
@@ -37,6 +38,8 @@ const app = express();
 const port = Number.parseInt(process.env.PORT || '3000', 10);
 const maxUploadFiles = readPositiveInt(process.env.MAX_UPLOAD_FILES, 200);
 const maxUploadFileBytes = readPositiveInt(process.env.MAX_UPLOAD_FILE_MB, 250) * 1024 * 1024;
+const apiRateLimitWindowMs = readPositiveInt(process.env.API_RATE_LIMIT_WINDOW_MS, 60_000);
+const apiRateLimitMaxRequests = readPositiveInt(process.env.API_RATE_LIMIT_MAX_REQUESTS, 120);
 const uploadTempDir = path.resolve(process.env.UPLOAD_TMP_DIR || path.join(os.tmpdir(), 'local-media-viewer-uploads'));
 const upload = multer({
   storage: multer.diskStorage({
@@ -57,6 +60,8 @@ app.use(securityHeaders);
 app.use(requireTrustedOrigin);
 app.use(express.json({ limit: '128kb' }));
 app.use(cookieParser());
+app.use('/api', apiRateLimit);
+app.use('/api', requireCsrfToken);
 
 app.post('/api/login', (req, res) => {
   const configuredPin = process.env.PIN_CODE;
@@ -76,11 +81,11 @@ app.post('/api/login', (req, res) => {
   }
 
   clearFailedLogins(loginKey);
-  createSession(req, res);
-  return res.json({ ok: true });
+  const csrfToken = createSession(req, res);
+  return res.json({ ok: true, csrfToken });
 });
 
-app.post('/api/logout', (req, res) => {
+app.post('/api/logout', requireAuth, (req, res) => {
   destroySession(req, res);
   return res.json({ ok: true });
 });
@@ -218,6 +223,36 @@ function requireTrustedOrigin(req, res, next) {
   if (!source || isTrustedSource(source, req)) return next();
 
   return res.status(403).json({ error: 'Источник запроса не разрешён' });
+}
+
+const apiRateLimitBuckets = new Map();
+
+function apiRateLimit(req, res, next) {
+  const now = Date.now();
+  const key = `${req.ip || req.socket.remoteAddress || 'unknown'}:${req.method}`;
+  const bucket = apiRateLimitBuckets.get(key);
+
+  if (!bucket || bucket.resetAt <= now) {
+    apiRateLimitBuckets.set(key, { count: 1, resetAt: now + apiRateLimitWindowMs });
+    cleanupRateLimitBuckets(now);
+    return next();
+  }
+
+  bucket.count += 1;
+  if (bucket.count > apiRateLimitMaxRequests) {
+    res.setHeader('Retry-After', Math.ceil((bucket.resetAt - now) / 1000));
+    return res.status(429).json({ error: 'Слишком много запросов. Попробуйте позже.' });
+  }
+
+  return next();
+}
+
+function cleanupRateLimitBuckets(now) {
+  for (const [key, bucket] of apiRateLimitBuckets) {
+    if (bucket.resetAt <= now) {
+      apiRateLimitBuckets.delete(key);
+    }
+  }
 }
 
 function isTrustedSource(source, req) {

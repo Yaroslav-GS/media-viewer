@@ -1,5 +1,7 @@
+const CSRF_KEY = 'media-viewer-csrf-token';
+
 export async function apiFetch(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, withCsrfHeader(options));
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
@@ -14,9 +16,19 @@ export async function apiFetch(url, options = {}) {
 export function jsonFetch(url, body, options = {}) {
   return apiFetch(url, {
     method: options.method || 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...options.headers, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
+}
+
+export function setCsrfToken(token) {
+  if (typeof token === 'string' && token) {
+    sessionStorage.setItem(CSRF_KEY, token);
+  }
+}
+
+export function clearCsrfToken() {
+  sessionStorage.removeItem(CSRF_KEY);
 }
 
 export function uploadWithProgress(targetPath, entries, onProgress) {
@@ -29,6 +41,10 @@ export function uploadWithProgress(targetPath, entries, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `/api/upload?path=${encodeURIComponent(targetPath)}`);
+    const csrfToken = sessionStorage.getItem(CSRF_KEY);
+    if (csrfToken) {
+      xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+    }
 
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable) return;
@@ -58,4 +74,20 @@ function parseJson(value) {
   } catch {
     return {};
   }
+}
+
+function withCsrfHeader(options) {
+  const method = (options.method || 'GET').toUpperCase();
+  if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return options;
+
+  const csrfToken = sessionStorage.getItem(CSRF_KEY);
+  if (!csrfToken) return options;
+
+  return {
+    ...options,
+    headers: {
+      ...options.headers,
+      'X-CSRF-Token': csrfToken
+    }
+  };
 }

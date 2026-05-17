@@ -3,8 +3,9 @@ const pinCode = process.env.SMOKE_PIN_CODE || process.env.PIN_CODE || '1234';
 
 await waitForServer();
 await assertRootPage();
-const cookie = await login();
+const { cookie, csrfToken } = await login();
 await assertTree(cookie);
+await assertCsrfProtection(cookie, csrfToken);
 
 console.log('Smoke test passed');
 
@@ -50,7 +51,12 @@ async function login() {
     throw new Error('POST /api/login did not set a session cookie');
   }
 
-  return cookie;
+  const body = await response.json();
+  if (typeof body.csrfToken !== 'string' || !body.csrfToken) {
+    throw new Error('POST /api/login did not return a CSRF token');
+  }
+
+  return { cookie, csrfToken: body.csrfToken };
 }
 
 async function assertTree(cookie) {
@@ -63,6 +69,23 @@ async function assertTree(cookie) {
   if (body.path !== '/' || !Array.isArray(body.children)) {
     throw new Error('GET /api/tree returned an unexpected payload');
   }
+}
+
+async function assertCsrfProtection(cookie, csrfToken) {
+  const rejectedResponse = await fetch(`${baseUrl}/api/logout`, {
+    method: 'POST',
+    headers: { Cookie: cookie }
+  });
+  assertStatus(rejectedResponse, 403, 'POST /api/logout without CSRF token');
+
+  const acceptedResponse = await fetch(`${baseUrl}/api/logout`, {
+    method: 'POST',
+    headers: {
+      Cookie: cookie,
+      'X-CSRF-Token': csrfToken
+    }
+  });
+  assertStatus(acceptedResponse, 200, 'POST /api/logout with CSRF token');
 }
 
 function assertStatus(response, expected, label) {
