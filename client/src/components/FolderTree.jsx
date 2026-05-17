@@ -10,6 +10,8 @@ export default function FolderTree({
   onDeleteFolder,
   onCreateFolder,
   onMoveFolderRequest,
+  expandedPaths,
+  onToggleFolder,
   dragPayload,
   onDragPayloadChange
 }) {
@@ -24,6 +26,8 @@ export default function FolderTree({
         onDeleteFolder={onDeleteFolder}
         onCreateFolder={onCreateFolder}
         onMoveFolderRequest={onMoveFolderRequest}
+        expandedPaths={expandedPaths}
+        onToggleFolder={onToggleFolder}
         dragPayload={dragPayload}
         onDragPayloadChange={onDragPayloadChange}
         root
@@ -41,14 +45,16 @@ function TreeNode({
   onDeleteFolder,
   onCreateFolder,
   onMoveFolderRequest,
+  expandedPaths,
+  onToggleFolder,
   dragPayload,
   onDragPayloadChange,
   root = false
 }) {
-  const [open, setOpen] = useState(root);
   const [dropTarget, setDropTarget] = useState(false);
   const hasChildren = node.children?.length > 0;
   const isSelected = selectedPath === node.path;
+  const open = root || expandedPaths.has(node.path);
 
   function handleLabelClick() {
     onSelect(node.path);
@@ -56,7 +62,7 @@ function TreeNode({
 
   function handleLabelDoubleClick() {
     if (hasChildren) {
-      setOpen((value) => !value);
+      onToggleFolder(node.path);
     }
   }
 
@@ -118,7 +124,7 @@ function TreeNode({
       >
         <button
           className="tree-toggle"
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => onToggleFolder(node.path)}
           disabled={!hasChildren}
           aria-label={open ? 'Свернуть' : 'Развернуть'}
         >
@@ -179,6 +185,8 @@ function TreeNode({
               onDeleteFolder={onDeleteFolder}
               onCreateFolder={onCreateFolder}
               onMoveFolderRequest={onMoveFolderRequest}
+              expandedPaths={expandedPaths}
+              onToggleFolder={onToggleFolder}
               dragPayload={dragPayload}
               onDragPayloadChange={onDragPayloadChange}
             />

@@ -7,6 +7,7 @@ import { apiFetch, jsonFetch, uploadWithProgress } from './lib/api.js';
 import { collectDroppedEntries } from './lib/dropEntries.js';
 
 const AUTH_KEY = 'media-viewer-authenticated';
+const EXPANDED_FOLDERS_KEY = 'media-viewer-expanded-folders';
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(sessionStorage.getItem(AUTH_KEY) === '1');
@@ -26,6 +27,7 @@ export default function App() {
   const [mediaActionItem, setMediaActionItem] = useState(null);
   const [moveRequest, setMoveRequest] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
+  const [expandedFolders, setExpandedFolders] = useState(() => readExpandedFolders());
   const [thumbSize, setThumbSize] = useState(() => localStorage.getItem('media-viewer-thumb-size') || 'medium');
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
@@ -104,9 +106,11 @@ export default function App() {
   async function handleLogout() {
     await fetch('/api/logout', { method: 'POST' });
     sessionStorage.removeItem(AUTH_KEY);
+    sessionStorage.removeItem(EXPANDED_FOLDERS_KEY);
     setIsAuthenticated(false);
     setTree(null);
     setItems([]);
+    setExpandedFolders(new Set(['/']));
     setFolderDrawerOpen(false);
     setUploadSheetOpen(false);
     setMediaActionItem(null);
@@ -115,8 +119,36 @@ export default function App() {
   }
 
   function selectPath(path) {
+    updateExpandedFolders((current) => {
+      const next = new Set(current);
+      for (const ancestor of pathAncestors(path)) {
+        next.add(ancestor);
+      }
+      return next;
+    });
     setSelectedPath(path);
     setFolderDrawerOpen(false);
+  }
+
+  function toggleFolder(path) {
+    updateExpandedFolders((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      next.add('/');
+      return next;
+    });
+  }
+
+  function updateExpandedFolders(updater) {
+    setExpandedFolders((current) => {
+      const next = updater(current);
+      sessionStorage.setItem(EXPANDED_FOLDERS_KEY, JSON.stringify(Array.from(next)));
+      return next;
+    });
   }
 
   function changeThumbSize(size) {
@@ -211,6 +243,7 @@ export default function App() {
       setError('');
       await jsonFetch('/api/move-folder', { from: folderPath, toDir: targetFolderPath });
       setStatus('Папка перемещена');
+      removeExpandedFolderBranch(folderPath);
       if (selectedPath === folderPath || selectedPath.startsWith(`${folderPath}/`)) {
         setSelectedPath('/');
         await refresh({ tree: true, mediaPath: '/' });
@@ -244,36 +277,33 @@ export default function App() {
       setError('');
       const result = await jsonFetch('/api/folder', { parentPath, name });
       setStatus(`Папка создана: ${result.name}`);
+      updateExpandedFolders((current) => new Set([...current, parentPath]));
       await refresh({ tree: true });
     } catch (err) {
       setError(err.message || 'Не удалось создать папку');
     }
   }
 
-  async function deleteMediaItem(item, index = items.findIndex((mediaItem) => mediaItem.path === item.path)) {
+  async function deleteMediaItem(item) {
     try {
       setError('');
       await jsonFetch('/api/media', { path: item.path }, { method: 'DELETE' });
       setStatus('Файл удалён');
       const nextItems = items.filter((mediaItem) => mediaItem.path !== item.path);
       setItems(nextItems);
-      if (!nextItems.length) {
-        setViewerIndex(null);
-      } else {
-        setViewerIndex(Math.min(index, nextItems.length - 1));
-      }
+      setViewerIndex(null);
     } catch (err) {
       setError(err.message || 'Удаление невозможно');
     }
   }
 
-  async function deleteViewerItem(item, index) {
+  async function deleteViewerItem(item) {
     setConfirmAction({
       title: 'Удалить файл?',
       text: item.name,
       confirmLabel: 'Удалить',
       danger: true,
-      onConfirm: () => deleteMediaItem(item, index)
+      onConfirm: () => deleteMediaItem(item)
     });
   }
 
@@ -295,8 +325,10 @@ export default function App() {
       setStatus('Папка удалена');
       if (selectedPath === folderPath || selectedPath.startsWith(`${folderPath}/`)) {
         setSelectedPath('/');
+        removeExpandedFolderBranch(folderPath);
         await refresh({ tree: true, mediaPath: '/' });
       } else {
+        removeExpandedFolderBranch(folderPath);
         await refresh({ tree: true });
       }
     } catch (err) {
@@ -320,6 +352,18 @@ export default function App() {
       name: folderName
     });
     setFolderDrawerOpen(true);
+  }
+
+  function removeExpandedFolderBranch(folderPath) {
+    updateExpandedFolders((current) => {
+      const next = new Set(['/']);
+      for (const path of current) {
+        if (path !== folderPath && !path.startsWith(`${folderPath}/`)) {
+          next.add(path);
+        }
+      }
+      return next;
+    });
   }
 
   async function confirmPendingAction() {
@@ -361,6 +405,8 @@ export default function App() {
             onDeleteFolder={deleteFolderFromTree}
             onCreateFolder={createFolderInTree}
             onMoveFolderRequest={requestFolderMove}
+            expandedPaths={expandedFolders}
+            onToggleFolder={toggleFolder}
             dragPayload={dragPayload}
             onDragPayloadChange={setDragPayload}
           />
@@ -522,6 +568,8 @@ export default function App() {
                 onDeleteFolder={deleteFolderFromTree}
                 onCreateFolder={createFolderInTree}
                 onMoveFolderRequest={requestFolderMove}
+                expandedPaths={expandedFolders}
+                onToggleFolder={toggleFolder}
                 dragPayload={dragPayload}
                 onDragPayloadChange={setDragPayload}
               />
@@ -617,6 +665,25 @@ function pathBreadcrumbs(path) {
       path: `/${parts.slice(0, index + 1).join('/')}`
     }))
   ];
+}
+
+function pathAncestors(path) {
+  if (path === '/') return ['/'];
+
+  const parts = path.split('/').filter(Boolean);
+  return [
+    '/',
+    ...parts.slice(0, -1).map((_, index) => `/${parts.slice(0, index + 1).join('/')}`)
+  ];
+}
+
+function readExpandedFolders() {
+  try {
+    const paths = JSON.parse(sessionStorage.getItem(EXPANDED_FOLDERS_KEY) || '[]');
+    return new Set(['/', ...paths.filter((path) => typeof path === 'string')]);
+  } catch {
+    return new Set(['/']);
+  }
 }
 
 function nextThumbSize(size) {
