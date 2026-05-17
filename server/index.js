@@ -2,6 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import multer from 'multer';
+import rateLimit from 'express-rate-limit';
+import csrf from 'csurf';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -37,7 +39,24 @@ const app = express();
 const port = Number.parseInt(process.env.PORT || '3000', 10);
 const maxUploadFiles = readPositiveInt(process.env.MAX_UPLOAD_FILES, 200);
 const maxUploadFileBytes = readPositiveInt(process.env.MAX_UPLOAD_FILE_MB, 250) * 1024 * 1024;
+const apiRateLimitWindowMs = readPositiveInt(process.env.API_RATE_LIMIT_WINDOW_MS, 60_000);
+const apiRateLimitMaxRequests = readPositiveInt(process.env.API_RATE_LIMIT_MAX_REQUESTS, 120);
 const uploadTempDir = path.resolve(process.env.UPLOAD_TMP_DIR || path.join(os.tmpdir(), 'local-media-viewer-uploads'));
+const apiRateLimit = rateLimit({
+  windowMs: apiRateLimitWindowMs,
+  limit: apiRateLimitMaxRequests,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Слишком много запросов. Попробуйте позже.' }
+});
+const csrfProtection = csrf({
+  cookie: {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/'
+  }
+});
 const upload = multer({
   storage: multer.diskStorage({
     destination(req, file, callback) {
@@ -57,6 +76,12 @@ app.use(securityHeaders);
 app.use(requireTrustedOrigin);
 app.use(express.json({ limit: '128kb' }));
 app.use(cookieParser());
+app.use(csrfProtection);
+app.use('/api', apiRateLimit);
+
+app.get('/api/csrf-token', (req, res) => {
+  return res.json({ csrfToken: req.csrfToken() });
+});
 
 app.post('/api/login', (req, res) => {
   const configuredPin = process.env.PIN_CODE;
@@ -77,10 +102,10 @@ app.post('/api/login', (req, res) => {
 
   clearFailedLogins(loginKey);
   createSession(req, res);
-  return res.json({ ok: true });
+  return res.json({ ok: true, csrfToken: req.csrfToken() });
 });
 
-app.post('/api/logout', (req, res) => {
+app.post('/api/logout', requireAuth, (req, res) => {
   destroySession(req, res);
   return res.json({ ok: true });
 });
@@ -182,6 +207,10 @@ app.use((error, req, res, next) => {
 
   if (error.type === 'entity.too.large') {
     return res.status(413).json({ error: 'Тело запроса слишком большое' });
+  }
+
+  if (error.code === 'EBADCSRFTOKEN') {
+    return res.status(403).json({ error: 'Недействительный CSRF-токен' });
   }
 
   const statusCode = error.statusCode || 500;

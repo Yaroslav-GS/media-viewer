@@ -226,13 +226,15 @@ export async function saveUploadedMedia(mediaRoot, targetRelativePath, files, re
   const { absolutePath: targetDir } = resolveInsideRoot(mediaRoot, targetRelativePath);
   await assertExistingDirectoryInsideRoot(mediaRoot, targetDir);
 
+  const uploadedFiles = Array.isArray(files) ? files : [];
+  const uploadRelativePaths = Array.isArray(relativePaths) ? relativePaths : [];
   const topFolderMap = new Map();
   const saved = [];
   const skipped = [];
 
-  for (let index = 0; index < files.length; index += 1) {
-    const file = files[index];
-    const uploadPath = relativePaths[index] || file.originalname;
+  for (let index = 0; index < uploadedFiles.length; index += 1) {
+    const file = uploadedFiles[index];
+    const uploadPath = uploadRelativePaths[index] || file.originalname;
     const segments = safeUploadSegments(uploadPath || file.originalname);
     const fileName = segments.at(-1) || file.originalname;
 

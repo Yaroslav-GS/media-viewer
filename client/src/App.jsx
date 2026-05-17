@@ -3,7 +3,7 @@ import Login from './components/Login.jsx';
 import FolderTree from './components/FolderTree.jsx';
 import MediaGrid from './components/MediaGrid.jsx';
 import Viewer from './components/Viewer.jsx';
-import { apiFetch, jsonFetch, uploadWithProgress } from './lib/api.js';
+import { apiFetch, clearCsrfToken, jsonFetch, uploadWithProgress } from './lib/api.js';
 import { collectDroppedEntries } from './lib/dropEntries.js';
 
 const AUTH_KEY = 'media-viewer-authenticated';
@@ -104,9 +104,10 @@ export default function App() {
   }
 
   async function handleLogout() {
-    await fetch('/api/logout', { method: 'POST' });
+    await apiFetch('/api/logout', { method: 'POST' }).catch(() => {});
     sessionStorage.removeItem(AUTH_KEY);
     sessionStorage.removeItem(EXPANDED_FOLDERS_KEY);
+    clearCsrfToken();
     setIsAuthenticated(false);
     setTree(null);
     setItems([]);
