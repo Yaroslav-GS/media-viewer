@@ -49,6 +49,15 @@ const apiRateLimit = rateLimit({
   legacyHeaders: false,
   message: { error: 'Слишком много запросов. Попробуйте позже.' }
 });
+// A gallery makes many more content requests than API calls. Keep its budget
+// separate while limiting authentication checks, file I/O and preview work.
+const contentRateLimit = rateLimit({
+  windowMs: readPositiveInt(process.env.CONTENT_RATE_LIMIT_WINDOW_MS, 60_000),
+  limit: readPositiveInt(process.env.CONTENT_RATE_LIMIT_MAX_REQUESTS, 1200),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Слишком много запросов. Попробуйте позже.' }
+});
 const csrfProtection = csrf({
   cookie: {
     httpOnly: true,
@@ -172,13 +181,13 @@ app.delete('/api/folder', requireAuth, asyncHandler(async (req, res) => {
   return res.json({ ok: true });
 }));
 
-app.get('/media/*mediaPath', requireAuth, asyncHandler(async (req, res) => {
+app.get('/media/*mediaPath', contentRateLimit, requireAuth, asyncHandler(async (req, res) => {
   const mediaPath = wildcardMediaPath(req.params.mediaPath);
   const mediaRoot = await getRequestMediaRoot();
   await sendMediaFile(req, res, mediaRoot, mediaPath);
 }));
 
-app.get('/preview/*mediaPath', requireAuth, asyncHandler(async (req, res) => {
+app.get('/preview/*mediaPath', contentRateLimit, requireAuth, asyncHandler(async (req, res) => {
   const mediaPath = wildcardMediaPath(req.params.mediaPath);
   const mediaRoot = await getRequestMediaRoot();
   await sendMediaPreviewFile(req, res, mediaRoot, mediaPath);
@@ -193,7 +202,7 @@ app.use((req, res, next) => {
 });
 
 const distDir = path.join(rootDir, 'dist');
-app.use(express.static(distDir));
+app.use(contentRateLimit, express.static(distDir));
 app.get('/{*splat}', (req, res) => {
   res.sendFile('index.html', { root: distDir });
 });

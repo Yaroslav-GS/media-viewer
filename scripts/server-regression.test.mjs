@@ -64,7 +64,8 @@ describe('Express 5 server regressions', { timeout: 30_000 }, () => {
       CACHE_METADATA_PATH: path.join(temporaryDir, 'cache/metadata.json'),
       UPLOAD_TMP_DIR: path.join(temporaryDir, 'uploads'),
       THUMB_SIZES: '240,480,720', THUMB_DEFAULT_SIZE: '480', THUMB_FORMAT: 'webp',
-      API_RATE_LIMIT_MAX_REQUESTS: '1000', LOGIN_MAX_ATTEMPTS: '100', ALLOWED_ORIGINS: ''
+      API_RATE_LIMIT_MAX_REQUESTS: '1000', CONTENT_RATE_LIMIT_MAX_REQUESTS: '1200',
+      CONTENT_RATE_LIMIT_WINDOW_MS: '60000', LOGIN_MAX_ATTEMPTS: '100', ALLOWED_ORIGINS: ''
     };
     app = spawnServer();
     baseUrl = await waitForStartup(app);
@@ -253,6 +254,20 @@ describe('Express 5 server regressions', { timeout: 30_000 }, () => {
     assert.match(stderr, /EADDRINUSE/);
     assert.doesNotMatch(stdout, /Local Media Viewer:/);
   });
+
+  test('rate limits content before authorization and shares the budget with SPA requests', async (t) => {
+    const limited = spawnServer({ CONTENT_RATE_LIMIT_MAX_REQUESTS: '2' });
+    t.after(() => stopServer(limited));
+    const base = await waitForStartup(limited);
+    assert.equal((await request('/media/root.png', { base })).status, 401);
+    assert.equal((await request('/preview/root.png', { base })).status, 401);
+    const rejected = await request('/album/nested', { base });
+    assert.equal(rejected.status, 429);
+    assert.ok(rejected.headers['retry-after']);
+    assert.match(rejected.headers['content-type'], /^application\/json/);
+    // Content traffic must not consume the API's independent rate-limit budget.
+    assert.equal((await request('/api/csrf-token', { base })).status, 200);
+  });
 });
 
 function spawnServer(overrides = {}) {
@@ -300,11 +315,11 @@ function authorizedRequest(url, options = {}) {
   return request(url, { ...options, headers: { Cookie: cookie, ...options.headers } });
 }
 
-function request(url, { method = 'GET', headers = {}, body } = {}) {
+function request(url, { base = baseUrl, method = 'GET', headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
     const requestHeaders = { ...headers };
     if (body !== undefined) requestHeaders['Content-Length'] = Buffer.byteLength(body);
-    const req = http.request(baseUrl, { path: url, method, headers: requestHeaders }, (res) => {
+    const req = http.request(base, { path: url, method, headers: requestHeaders }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('error', reject);
