@@ -112,6 +112,19 @@ npm start
 
 После запуска откройте `http://localhost:3000`, если в `.env` не указан другой `PORT`.
 
+## Проверки
+
+```bash
+npm ci
+npm run lint
+npm run build
+npm run test:regression
+```
+
+Регрессионные тесты запускают сервер с временной медиатекой и кешем, проверяют
+маршруты файлов, превью, SPA и ограничения доступа, а также выполняют smoke-тест.
+Подробности миграции: [docs/express-5-migration.md](docs/express-5-migration.md).
+
 ## Что Умеет
 
 - вход по PIN-коду;
@@ -162,6 +175,8 @@ LOGIN_WINDOW_MINUTES=10
 LOGIN_MAX_ATTEMPTS=8
 MAX_UPLOAD_FILES=200
 MAX_UPLOAD_FILE_MB=250
+CONTENT_RATE_LIMIT_WINDOW_MS=60000
+CONTENT_RATE_LIMIT_MAX_REQUESTS=1200
 ALLOWED_ORIGINS=https://media.example.local,http://localhost:5173
 ```
 

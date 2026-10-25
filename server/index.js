@@ -49,6 +49,15 @@ const apiRateLimit = rateLimit({
   legacyHeaders: false,
   message: { error: 'Слишком много запросов. Попробуйте позже.' }
 });
+// A gallery makes many more content requests than API calls. Keep its budget
+// separate while limiting authentication checks, file I/O and preview work.
+const contentRateLimit = rateLimit({
+  windowMs: readPositiveInt(process.env.CONTENT_RATE_LIMIT_WINDOW_MS, 60_000),
+  limit: readPositiveInt(process.env.CONTENT_RATE_LIMIT_MAX_REQUESTS, 1200),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Слишком много запросов. Попробуйте позже.' }
+});
 const csrfProtection = csrf({
   cookie: {
     httpOnly: true,
@@ -126,7 +135,7 @@ app.post('/api/upload', requireAuth, upload.array('files'), asyncHandler(async (
   let result;
   try {
     const mediaRoot = await getRequestMediaRoot();
-    const relativePaths = parseRelativePaths(req.body.paths);
+    const relativePaths = parseRelativePaths(req.body?.paths);
     result = await saveUploadedMedia(mediaRoot, req.query.path || '/', req.files || [], relativePaths);
   } finally {
     await cleanupUploadedFiles(req.files || []);
@@ -172,14 +181,16 @@ app.delete('/api/folder', requireAuth, asyncHandler(async (req, res) => {
   return res.json({ ok: true });
 }));
 
-app.get('/media/*', requireAuth, asyncHandler(async (req, res) => {
+app.get('/media/*mediaPath', contentRateLimit, requireAuth, asyncHandler(async (req, res) => {
+  const mediaPath = wildcardMediaPath(req.params.mediaPath);
   const mediaRoot = await getRequestMediaRoot();
-  await sendMediaFile(req, res, mediaRoot, `/${req.params[0] || ''}`);
+  await sendMediaFile(req, res, mediaRoot, mediaPath);
 }));
 
-app.get('/preview/*', requireAuth, asyncHandler(async (req, res) => {
+app.get('/preview/*mediaPath', contentRateLimit, requireAuth, asyncHandler(async (req, res) => {
+  const mediaPath = wildcardMediaPath(req.params.mediaPath);
   const mediaRoot = await getRequestMediaRoot();
-  await sendMediaPreviewFile(req, res, mediaRoot, `/${req.params[0] || ''}`);
+  await sendMediaPreviewFile(req, res, mediaRoot, mediaPath);
 }));
 
 app.use((req, res, next) => {
@@ -191,9 +202,9 @@ app.use((req, res, next) => {
 });
 
 const distDir = path.join(rootDir, 'dist');
-app.use(express.static(distDir));
-app.get('*', (req, res) => {
-  res.sendFile(path.join(distDir, 'index.html'));
+app.use(contentRateLimit, express.static(distDir));
+app.get('/{*splat}', (req, res) => {
+  res.sendFile('index.html', { root: distDir });
 });
 
 app.use((error, req, res, next) => {
@@ -213,13 +224,28 @@ app.use((error, req, res, next) => {
     return res.status(403).json({ error: 'Недействительный CSRF-токен' });
   }
 
-  const statusCode = error.statusCode || 500;
+  const errorStatus = error.statusCode || error.status;
+  const statusCode = Number.isInteger(errorStatus) && errorStatus >= 400 && errorStatus <= 599 ? errorStatus : 500;
   return res.status(statusCode).json({ error: error.message || 'Ошибка сервера' });
 });
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`Local Media Viewer: http://localhost:${port}`);
+const server = app.listen(port, '0.0.0.0', (error) => {
+  if (error) throw error;
+  console.log(`Local Media Viewer: http://localhost:${server.address().port}`);
 });
+
+function wildcardMediaPath(segments) {
+  // Express has already decoded each segment. Do not decode again or let path
+  // normalization reinterpret dot segments or encoded separators as traversal.
+  if (!Array.isArray(segments) || !segments.length || segments.some((segment) => (
+    !segment || segment === '.' || segment === '..' || /[/\\\0]/.test(segment)
+  ))) {
+    const error = new Error('Недопустимый путь');
+    error.statusCode = 400;
+    throw error;
+  }
+  return `/${segments.join('/')}`;
+}
 
 function asyncHandler(handler) {
   return (req, res, next) => {

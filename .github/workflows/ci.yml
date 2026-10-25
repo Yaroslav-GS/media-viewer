@@ -19,7 +19,7 @@ env:
 
 jobs:
   verify:
-    name: Lint, build, smoke
+    name: Lint, build, regression, smoke
     runs-on: ubuntu-latest
 
     steps:
@@ -40,6 +40,9 @@ jobs:
 
       - name: Build app
         run: npm run build
+
+      - name: Server regression tests
+        run: npm run test:regression
 
       - name: Smoke test app
         env:
